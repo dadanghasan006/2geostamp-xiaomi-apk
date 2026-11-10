@@ -2961,16 +2961,36 @@ SOFTWARE.
     const loadedAssetImages = {};
     const tileCache = {};
 
-    async function preloadAssets() {
-      for (const [k, b64] of Object.entries(EMBEDDED_ASSETS)) {
+    function loadImageSafe(src, useCors = false, timeoutMs = 6000) {
+      return new Promise((resolve) => {
         const img = new Image();
-        img.src = b64;
-        await new Promise(r => { img.onload = r; img.onerror = r; });
-        loadedAssetImages[k] = img;
+        let done = false;
+        const finish = (res) => {
+          if (!done) {
+            done = true;
+            resolve(res);
+          }
+        };
+        const timer = setTimeout(() => finish(null), timeoutMs);
+        img.onload = () => { clearTimeout(timer); finish(img); };
+        img.onerror = () => { clearTimeout(timer); finish(null); };
+        if (useCors) img.crossOrigin = 'anonymous';
+        img.src = src;
+        if (img.complete && img.naturalWidth > 0) {
+          clearTimeout(timer);
+          finish(img);
+        }
+      });
+    }
+
+    let assetsPreloaded = false;
+    async function preloadAssets() {
+      if (assetsPreloaded) return;
+      for (const [k, b64] of Object.entries(EMBEDDED_ASSETS)) {
+        const img = await loadImageSafe(b64, false, 3000);
+        if (img) loadedAssetImages[k] = img;
       }
-      if (document.fonts && document.fonts.ready) {
-        await document.fonts.ready;
-      }
+      assetsPreloaded = true;
     }
     preloadAssets();
 
@@ -3217,11 +3237,8 @@ SOFTWARE.
       if (tileCache[key]) return tileCache[key];
       const srv = Math.abs(x + y) % 4;
       const url = `https://mt${srv}.google.com/vt/lyrs=${lyrs}&x=${x}&y=${y}&z=${z}&scale=2&hl=id`;
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = url;
-      await new Promise(r => { img.onload = r; img.onerror = r; });
-      tileCache[key] = img;
+      const img = await loadImageSafe(url, true, 5000);
+      if (img) tileCache[key] = img;
       return img;
     }
 
@@ -3328,9 +3345,6 @@ SOFTWARE.
       const exif = {};
       exif[piexif.ExifIFD.DateTimeOriginal] = exifDt;
       exif[piexif.ExifIFD.DateTimeDigitized] = exifDt;
-      exif[piexif.ExifIFD.OffsetTime] = offsetStr;
-      exif[piexif.ExifIFD.OffsetTimeOriginal] = offsetStr;
-      exif[piexif.ExifIFD.OffsetTimeDigitized] = offsetStr;
       exif[piexif.ExifIFD.FNumber] = [188, 100];
       exif[piexif.ExifIFD.FocalLength] = [559, 100];
       exif[piexif.ExifIFD.FocalLengthIn35mmFilm] = 24;
@@ -3359,23 +3373,26 @@ SOFTWARE.
       const statusEl = document.getElementById('liveStatus');
       if (statusEl) statusEl.textContent = '• Memperbarui preview...';
 
-      await preloadAssets();
+      try {
+        await preloadAssets();
 
-      const file = selectedFiles[0];
-      const imgUrl = URL.createObjectURL(file);
-      const origImg = new Image();
-      origImg.src = imgUrl;
-      await new Promise(r => { origImg.onload = r; });
+        const file = selectedFiles[0];
+        const imgUrl = URL.createObjectURL(file);
+        const origImg = await loadImageSafe(imgUrl, false, 8000);
+        URL.revokeObjectURL(imgUrl);
+        if (!origImg) {
+          if (statusEl) statusEl.textContent = '• Gagal memuat gambar';
+          return;
+        }
 
-      const w = origImg.naturalWidth;
-      const h = origImg.naturalHeight;
+        const w = origImg.naturalWidth;
+        const h = origImg.naturalHeight;
 
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(origImg, 0, 0, w, h);
-      URL.revokeObjectURL(imgUrl);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(origImg, 0, 0, w, h);
 
       const lat = parseFloat(document.getElementById('latInput').value) || -8.260014;
       const lon = parseFloat(document.getElementById('lonInput').value) || 113.410024;
@@ -3601,6 +3618,10 @@ SOFTWARE.
           a.click();
           document.body.removeChild(a);
         }
+      }
+      } catch (err) {
+        console.error('Render error:', err);
+        if (statusEl) statusEl.textContent = '• Error: ' + err.message;
       }
     }
 
